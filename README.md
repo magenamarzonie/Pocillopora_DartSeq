@@ -23,7 +23,7 @@ This repository contains dartseq analysis scripts to run for the publication:
 15_DAPC <br>
 16_Admixture analysis and visualisation  <br>
 
-**Pocillopora verrucosa**
+**Pocillopora verrucosa** <br>
 17_QC Filtering <br>
 18_Heterozygosity <br> 
 19_Allelic richness <br>
