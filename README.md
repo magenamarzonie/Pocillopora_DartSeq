@@ -4,14 +4,14 @@
 This repository contains dartseq analysis scripts to run for the publication: 
 
 ##Acropora humilis 
-01_QC Filtering
-02_Heterozygosity
-03_Allelic richness
-04_Pairwise Fst analysis and visualisation 
-05_Isolation by distance analysis and visualisation 
-06_PCA
-07_DAPC
-08_Admixture analysis and visualisation 
+01_QC Filtering <br>
+02_Heterozygosity <br>
+03_Allelic richness <br>
+04_Pairwise Fst analysis and visualisation  <br>
+05_Isolation by distance analysis and visualisation  <br>
+06_PCA <br>
+07_DAPC <br>
+08_Admixture analysis and visualisation  <br>
 
 ##Pocillopora meandrina 
 09_QC Filtering
