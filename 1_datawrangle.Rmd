@@ -1,0 +1,593 @@
+---
+title: "1_datawrangle"
+output: html_document
+date: "2022-09-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**This markdown goes through the initial filtering stages for Pocillopora meandrina using Dartseq data** 
+
+#Load libraries
+```{r}
+library(dartR)
+library(adegenet)
+library(poppr)
+library(hierfstat)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+library(dplyr)
+```
+
+
+```{r}
+gl <- gl.read.dart(filename = "Report_DPoc22-7167_SNP_mapping_2.csv", covfilename = "Pmeandrina_dartLIMS_sector.csv")
+#saveRDS(gl, file="gl.Rdata") 
+
+gl <- gl.drop.ind(gl,
+   ind.list=c('JAN2019_13-124_P. verrucosa_103','P ver 221', 'P ver 371', 'P ver 372', 'P ver 291'))
+
+#we know that 62 total samples failed, so this makes sense that we only have 115 / 188 individuals recognised in our data frame. 
+```
+
+##Checking metadata 
+```{r}
+nInd(gl)
+#115 individuals
+
+nLoc(gl)
+#43980 loci in the original dataset (gl)
+
+nPop(gl)
+#13 populations ; regroup GBR by sub-regions 
+popNames(gl)
+
+
+#converting SNP files to a matrix 
+#generate a matrix of the SNP scores, with 0 as homozygous reference, 2 as homozygous alternate and 1 as heterozygous
+m <- as.matrix(gl)
+```
+
+
+```{r}
+#Dropping individiuals with weird admixture to see if it improves the number of loci retained
+#JAN2019_13-124_P. verrucosa_103
+#P ver 221
+#P ver 371
+#P ver 372
+#P ver 291
+
+gl.drop <- gl.drop.ind(gl,
+   ind.list=c('JAN2019_13-124_P. verrucosa_103','P ver 221', 'P ver 371', 'P ver 372', 'P ver 291'))
+
+nInd(gl.drop)
+#110 ind now
+
+nLoc(gl.drop)
+#same loci currently. See if next parameters change 
+```
+
+
+##Filter by call rate
+```{r}
+#First we are filtering SNP call rate typically at 95 % threshold to make a confident call on genotype. 
+#we need to decide whether it's better to filter by individual or by locus first. We agree it is better to lose loci in this case than to lose individuals, so we will filter by loci first. Indicated by method = "loc"
+# We are basically calculating the percentage of complete genotypes per loci in the entire dataset for Acropora. 
+
+#filter out secondaries (all but one SNP retained per sequence tag)
+gl <- gl.filter.secondaries(gl)
+
+nLoc(gl)
+#now we have 27,253 loci 
+
+gl.report.reproducibility(gl)
+
+#filter loci with reproducibility below a particular threshold
+gl <- gl.filter.reproducibility(gl, threshold = 0.98)
+
+nLoc(gl)
+#22,055
+
+#filter loci with >5% missing data. this is standard. 
+gl2 <- gl.filter.callrate(gl, method = "loc", threshold = 0.85)
+nLoc(gl2)
+#1827 SNPs remaining 
+
+#provide a summary of the call rate values
+gl.report.callrate(gl2) 
+```
+
+
+
+##Filter by call rate
+```{r}
+#First we are filtering SNP call rate typically at 95 % threshold to make a confident call on genotype. 
+#we need to decide whether it's better to filter by individual or by locus first. We agree it is better to lose loci in this case than to lose individuals, so we will filter by loci first. Indicated by method = "loc"
+# We are basically calculating the percentage of complete genotypes per loci in the entire dataset for Acropora. 
+
+#filter out secondaries (all but one SNP retained per sequence tag)
+gl.drop <- gl.filter.secondaries(gl.drop)
+
+nLoc(gl.drop)
+#same : now we have 27,253 loci 
+
+gl.report.reproducibility(gl.drop)
+
+#filter loci with reproducibility below a particular threshold
+gl.drop <- gl.filter.reproducibility(gl.drop, threshold = 0.98)
+
+nLoc(gl.drop)
+#a few less: 22000
+
+#filter loci with >5% missing data. this is standard. 
+gl2.drop <- gl.filter.callrate(gl.drop, method = "loc", threshold = 0.85)
+nLoc(gl2.drop)
+#1856 SNPs remaining ; slightly more with dropped 5 individuals 
+
+#provide a summary of the call rate values
+gl.report.callrate(gl2.drop) 
+```
+
+
+## MAF filtering 
+```{r}
+#We will filter out loci with a MAF less than 0.05.**
+gl3 <- gl.filter.maf(gl2, threshold = 0.95) 
+
+
+#report for MAF after filtering with MAF < 0.05 
+gl.report.maf(gl3)
+nLoc(gl3)
+#1260 snps remaining 
+```
+
+## MAF filtering 
+```{r}
+#We will filter out loci with a MAF less than 0.05.**
+gl3.drop <- gl.filter.maf(gl2.drop, threshold = 0.95) 
+
+
+#report for MAF after filtering with MAF < 0.05 
+gl.report.maf(gl3.drop)
+nLoc(gl3.drop)
+#1117 snps remaining 
+```
+
+##Impute missing data 
+```{r, include = FALSE}
+#here we are imputing any missing data using the 'neighbour' method. this is essential for some analyses later on to not have missing data 
+gl3 <- gl.impute(
+  gl3,
+  method = "neighbour",
+  fill.residual = TRUE,
+  parallel = FALSE,
+  verbose = NULL
+)
+```
+
+
+
+##Converting to a genlight object for downstream analysis 
+```{r}
+#converting a genlight object (we have) to a genind object so we can look at genetic data at an individual data using adegenet package. 
+pmea_gen <- gl2gi(gl3, probar = FALSE, verbose = NULL)
+pmea_gen
+
+is.genind(pmea_gen)
+```
+
+
+## Checking relatedness (for clones)
+```{r}
+#here we are checking for any clones / duplicate samples. We want to remove any that are. 
+#check genotypes are unique
+mlg(pmea_gen)
+
+#so we don't have any clones 
+```
+
+
+```{r}
+#check that loci are still polymorphic after filtering. Retaining monomorphic loci unnecessarily increases the size of the dataset and will affect some calculations.
+
+isPoly(pmea_gen) %>% summary
+
+#remove loci that are not polymorphic 
+
+poly_loci = names(which(isPoly(pmea_gen) == TRUE))
+pmea_gen = pmea_gen[loc = poly_loci]
+isPoly(pmea_gen) %>% summary
+```
+
+
+```{r}
+#Here we are calculating basic stats using hierfstat
+basic_pmea = basic.stats(pmea_gen, diploid = TRUE)
+
+# Mean observed heterozygosity per site
+Ho_pmea = apply(basic_pmea$Ho, MARGIN = 2, FUN = mean, na.rm = TRUE) %>%
+  round(digits = 2)
+Ho_pmea
+
+# Mean expected heterozygosity per site
+He_pmea = apply(basic_pmea$Hs, MARGIN = 2, FUN = mean, na.rm = TRUE) %>%
+  round(digits = 2)
+He_pmea
+
+# Create a data.frame of site names, Ho and He and then convert to long format
+Het_pmea_df = data.frame(Site = names(Ho_pmea), Ho = Ho_pmea, He = He_pmea) %>%
+  melt(id.vars = "Site")
+
+# Custom theme for ggplot2
+custom_theme = theme(
+  axis.text.x = element_text(size = 10, angle = 90, vjust = 0.5, face = "bold"),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 12),
+  axis.title.x = element_blank(),
+  axis.line.y = element_line(size = 0.5),
+  legend.title = element_blank(),
+  legend.text = element_text(size = 12),
+  panel.grid = element_blank(),
+  panel.background = element_blank(),
+  plot.title = element_text(hjust = 0.5, size = 15, face="bold")
+  )
+
+# Italic label
+hetlab.o = expression(italic("H")[o])
+hetlab.e = expression(italic("H")[e])
+
+# Acropora heterozygosity barplot
+ggplot(data = Het_pmea_df, aes(x = Site, y = value, fill = variable))+
+  geom_bar(stat = "identity", position = position_dodge(width = 0.6), colour = "black")+
+  scale_y_continuous(expand = c(0,0), limits = c(0,0.3), breaks = c(0, 0.05, 0.10, 0.15, 0.20, 0.25))+
+  scale_fill_manual(values = c("pink", "#bdbdbd"), labels = c(hetlab.o, hetlab.e))+
+  ylab("Heterozygosity")+
+  ggtitle("P. meandrina")+
+  custom_theme
+```
+
+
+```{r}
+#Looking at Fis values 
+apply(basic_pmea$Fis, MARGIN = 2, FUN = mean, na.rm = TRUE) %>%
+  round(digits = 3)
+```
+
+## Calculate Fst values 
+```{r}
+#using hierfstat package here. 
+#compute pairwise Fst values. Returns pairwise distances folloiwng Weir & Cockerham 1984 
+pmea_fst = genet.dist(pmea_gen, method = "WC84") %>% round(digits = 3)
+pmea_fst
+```
+
+##Plotting Fst values as a grid 
+```{r}
+library(wesanderson)
+pal = wes_palette("Zissou1", 12, type = "continuous")
+
+#Visualise pairwise Fst for reefs 
+# Desired order of labels
+lab_order = c("Wreck", "Saumarez", "Frederick", "Marion", "Flinders", "Chilcott", "Holmes", "Moore", "Bougainville", "Osprey", "13-124", "21-550", "22-084", "Corbett", "Chinaman", "Chicken", "Davie", "Davies", "Fitzroy", "Hoskyns", "Kelso", "Lady Musgrave")
+
+# Change order of rows and cols
+fst.mat = as.matrix(pmea_fst)
+fst.mat1 = fst.mat[lab_order, ]
+fst.mat2 = fst.mat1[, lab_order]
+
+# Create a data.frame
+ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                    Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                    Fst = fst.mat2[ ind ])
+
+# Keep the order of the levels in the data.frame for plotting 
+fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+
+# Convert minus values to zero
+fst.df$Fst[fst.df$Fst < 0] = 0
+
+# Print data.frame summary
+fst.df %>% str
+
+
+# Fst italic label
+fst.label = expression(italic("F")[ST])
+
+# Extract middle Fst value for gradient argument
+mid = max(fst.df$Fst) / 2
+
+# Plot heatmap
+ggplot(data = fst.df, aes(x = Site1, y = Site2, fill = Fst))+
+  geom_tile(colour = "black")+
+  geom_text(aes(label = Fst), color="black", size = 3)+
+    scale_fill_gradientn(colours = pal) + 
+  scale_colour_gradientn(colours = pal) +
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0), position = "right")+
+  theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 0.5), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 10)
+        )
+```
+
+
+
+#Admixture plots 
+```{r}
+library(LEA)
+## Here we are moving on to the LEA package in order to estimate K clusters, create admixture plots, impute missing data
+```
+
+
+```{r}
+#convert genlight object to a geno object for LEA
+gl2geno(gl3, outfile = "gl_geno", outpath = getwd(), verbose = NULL)
+```
+
+```{r}
+pc = pca("gl_geno.lfmm", scale = TRUE)
+tw = tracy.widom(pc)
+```
+
+
+```{r}
+#Plots the percentage of variance explained by eah component. You can look at the 'elbow' to inform the number of genetic clusers. It looks like ours is between 3-5.
+plot(tw$percentage, pch = 19, col = "darkblue", cex = .8)
+```
+
+```{r}
+project = NULL
+project = snmf("gl_geno.geno",
+K = 1:10,
+entropy = TRUE,
+repetitions = 10,
+project = "new")
+```
+
+```{r}
+# plot cross-entropy criterion for all runs in the snmf project
+plot(project, col = "blue", pch = 19, cex = 1.2)
+```
+
+
+```{r}
+# select the best run for K = 4 clusters
+best = which.min(cross.entropy(project, K = 3))
+my.colors <- c("tomato", "lightblue",
+"olivedrab", "gold")
+barchart(project, K = 3, run = best,
+border = NA, space = 0,
+col = my.colors,
+xlab = "Individuals",
+ylab = "Ancestry proportions",
+main = "Ancestry matrix") -> bp
+axis(1, at = 1:length(bp$order),
+labels = bp$order, las=1,
+cex.axis = .4)
+```
+
+
+
+```{r}
+pmea_gen_all <- gl2gi(gl3, probar = FALSE, verbose = NULL)
+pmea_gen_all
+
+is.genind(pmea_gen_all)
+```
+
+
+##Running PCA before DAPC
+```{r}
+x = tab(pmea_gen_all, NA.method = "mean")
+
+# Perform PCA
+pca1 = dudi.pca(x, scannf = FALSE, scale = FALSE, nf = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent = pca1$eig/sum(pca1$eig)*100
+
+barplot(percent, ylab = "Genetic variance explained by eigenvectors (%)", ylim = c(0,12),
+        names.arg = round(percent, 1))
+```
+
+
+##Visualise PCA 
+```{r}
+colourCount = length(unique(pmea_gen_all$pop))
+getPalette = colorRampPalette(brewer.pal(9, "Set1"))
+
+# Create a data.frame containing individual coordinates
+ind_coords = as.data.frame(pca1$li)
+
+# Rename columns of dataframe
+colnames(ind_coords) = c("Axis1","Axis2","Axis3")
+
+# Add a column containing individuals
+ind_coords$Ind = indNames(pmea_gen_all)
+
+# Add a column with the site IDs
+ind_coords$Site = pmea_gen_all$pop
+
+# Calculate centroid (average) position for each population
+centroid = aggregate(cbind(Axis1, Axis2, Axis3) ~ Site, data = ind_coords, FUN = mean)
+
+# Add centroid coordinates to ind_coords dataframe
+ind_coords = left_join(ind_coords, centroid, by = "Site", suffix = c("",".cen"))
+
+# Define colour palette
+#cols = brewer.pal(nPop(pmea_gen_all), "Set3")
+
+# Custom x and y labels
+xlab = paste("Axis 1 (", format(round(percent[1], 1), nsmall=1)," %)", sep="")
+ylab = paste("Axis 2 (", format(round(percent[2], 1), nsmall=1)," %)", sep="")
+
+# Custom theme for ggplot2
+ggtheme = theme(axis.text.y = element_text(colour="black", size=12),
+                axis.text.x = element_text(colour="black", size=12),
+                axis.title = element_text(colour="black", size=12),
+                panel.border = element_rect(colour="black", fill=NA, size=1),
+                panel.background = element_blank(),
+                plot.title = element_text(hjust=0.5, size=15) 
+)
+
+# Scatter plot axis 1 vs. 2
+ggplot(data = ind_coords, aes(x = Axis1, y = Axis2))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = 0)+
+  # spider segments
+  geom_segment(aes(xend = Axis1.cen, yend = Axis2.cen, colour = Site), show.legend = FALSE)+
+  # points
+  geom_point(aes(fill = Site), shape = 21, size = 3, show.legend = FALSE)+
+  # centroids
+  geom_label(data = centroid, aes(label = Site, fill = Site), size = 4, show.legend = FALSE)+
+  # colouring
+     scale_fill_manual(values = getPalette(colourCount))+
+  scale_colour_manual(values = getPalette(colourCount))+
+  # custom labels
+  labs(x = xlab, y = ylab)+
+  ggtitle("P mea All PCA")+
+  # custom theme
+  ggtheme
+
+```
+
+
+#Admixture plots 
+```{r}
+library(LEA)
+## Here we are moving on to the LEA package in order to estimate K clusters, create admixture plots, impute missing data
+```
+
+```{r}
+#convert genlight object to a geno object for LEA
+gl2geno(gl3, outfile = "gl_geno", outpath = getwd(), verbose = NULL)
+```
+
+```{r}
+pc = pca("gl_geno.lfmm", scale = TRUE)
+tw = tracy.widom(pc)
+```
+
+```{r}
+#Plots the percentage of variance explained by eah component. You can look at the 'elbow' to inform the number of genetic clusers. It looks like ours is between 3-5.
+plot(tw$percentage, pch = 19, col = "darkblue", cex = .8)
+```
+
+
+#Run snmf algorithm
+```{r, include=FALSE}
+snmf1 = snmf("gl_geno.geno",
+        K = 1:10,    #number of K ancestral populations to run
+        entropy = TRUE,     #calculate cross-entropy
+        repetitions = 10,    #10 repetitions for each K
+        project = "new")
+```
+
+```{r}
+plot(snmf1, col = "blue", cex = 1.5, pch = 19)
+```
+
+
+```{r}
+# Extract the cross-entropy of all runs where K = 3
+ce = cross.entropy(snmf1, K = 3)
+ce
+```
+
+```{r}
+lowest.ce = which.min(ce)
+lowest.ce
+```
+
+```{r}
+qmatrix = as.data.frame(Q(snmf1, K = 3, run = lowest.ce))
+head(qmatrix)
+```
+
+```{r}
+# Label column names of qmatrix
+ncol(qmatrix)
+cluster_names = c()
+for (i in 1:ncol(qmatrix)){
+  cluster_names[i] = paste("Cluster", i)
+}
+cluster_names
+colnames(qmatrix) = cluster_names
+head(qmatrix)
+
+```
+
+```{r}
+# Add individual IDs
+qmatrix$Ind = indNames(pmea_gen)
+```
+
+```{r}
+#Add site IDs
+qmatrix$Site = pmea_gen$pop
+head(qmatrix)
+```
+
+```{r}
+#Convert dataframe to long format
+qlong = melt(qmatrix, id.vars=c("Ind","Site"))
+head(qlong)
+```
+
+```{r}
+#Adjust facet labels
+levels(qlong$Site)
+# Change order of sites by using the factor function
+site.order = c("PCB", "Townsville", "Swains","CapBunk", "Bougainville", "Moore", "Willis", "Holmes", "Chilcott", "Marion", "Frederick", "Saumarez", "Wreck")
+qlong$Site_ord = factor(qlong$Site, levels = site.order)
+
+qlong <- qlong %>% mutate(site.order = factor(Site, levels = c("PCB",  "Townsville", "Swains", "CapBunk","Bougainville", "Moore", "Willis", "Holmes", "Chilcott", "Marion", "Frederick", "Saumarez", "Wreck")))
+levels(qlong$Site)
+
+#define colour palette 
+pal = colorRampPalette(c("tomato", "lightblue",
+"olivedrab", "gold"))
+cols = pal(length(unique(qlong$variable)))
+
+admix.bar = ggplot(data=qlong, aes(x=Ind, y=value, fill=variable))+
+  geom_bar(stat = "identity")+
+  scale_y_continuous(expand = c(0,0))+
+  facet_wrap(~site.order, scales = "free", ncol = 4)+
+  scale_fill_manual(values = cols)+
+  ylab("Admixture proportion")+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        strip.text = element_text(colour="black", size=12),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "top",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12))
+admix.bar
+```
+
+```{r}
+#Which individuals are only in cluster 2? 
+qlong %>% filter(variable == "Cluster 2") %>% 
+  filter(value > 0.75)
+
+#Let's try filtering out these individuals and see if we retain more loci
+#JAN2019_13-124_P. verrucosa_103
+#P ver 221
+#P ver 371
+#P ver 372
+#P ver 291
+```
+

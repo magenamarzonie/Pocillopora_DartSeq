@@ -1,0 +1,92 @@
+---
+title: "1.3_MEMs"
+author: "M.Marzonie"
+date: "2023-07-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Moran's Eigenvector Maps [MEM's]**
+Following code from Github tutorial link: https://github.com/laurabenestan/Moran-Eigenvector-Maps-MEMs/tree/master
+
+```{r}
+library(codep)
+library(adespatial)
+library(adegraphics)
+library(vegan)
+library(car)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(sf)
+library(tidyr)
+```
+
+
+```{r}
+geo <- read.csv("CSMP.GBR/pmea.coords.ch3.csv")
+```
+
+
+```{r}
+Coor=geo[,2:3]
+Coorxy=geo[,3:2]
+```
+
+```{r}
+plot(Coor, asp=1)
+```
+
+```{r}
+#Compute spatial distances among sites accounting for the earth curvature.
+
+DistSpatial=gcd.hf(Coor) 
+```
+
+
+```{r}
+dbmem = dbmem(DistSpatial)
+```
+
+```{r}
+summary(dbmem)
+#we get 6 MEMs from the model 
+
+#need to write the table of dbMEM summary. turn off function after table is written. 
+#write.table(dbmem, "dbMEMpmea.txt")
+```
+
+
+
+```{r}
+#Specify where to find the function to be sure of the function version to use in the package adegraphics.
+
+adegraphics::s.label(Coor, nb = attr(dbmem, "listw"))
+```
+
+```{r}
+ade4::s.value(Coorxy, dbmem[,1])
+```
+
+
+```{r}
+dbmem <- read.table("dbMEMpmea.txt", header=TRUE)
+```
+
+
+```{r}
+dbmem_gps_long <- gather(dbmem, MEM, Value, MEM1:ncol(dbmem))
+```
+
+
+```{r}
+dbmem_gps <- dbmem_gps_long %>% group_by(Latitude, Longitude, MEM)%>%
+  summarise(mem_mean <- mean(Value))
+setnames(dbmem_gps, "mem_mean <- mean(Value)", "Average_MEM")
+dbmem_wide <- spread(dbmem_gps, MEM, Average_MEM)
+write.table(dbmem_wide, "Mean_MEM_28GPS_fasciatus.txt", quote=FALSE, sep="\t",row.names=FALSE)
+```
+
