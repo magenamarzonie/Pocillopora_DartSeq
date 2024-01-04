@@ -1,0 +1,515 @@
+---
+title: "2_GEAv3"
+author: "M.Marzonie"
+date: "2023-12-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load libraries 
+```{r}
+library(dartR)
+library(adegenet)
+library(poppr)
+library(hierfstat)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+library(dplyr)
+library(adegenet)
+```
+
+#1. Genetic data
+##1.1 Calculate individual genetic distance
+```{r}
+#genind format genetic matrix 
+load("acro_gen.RData")
+gen <- acro_gen %>% as.matrix
+
+
+dim(gen)
+#260 individuals and 8332 loci 
+sum(is.na(gen))
+#0 because we already imputed missing data. 
+```
+
+```{r}
+gen.imp <- apply(gen, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+sum(is.na(gen.imp)) # No NAs
+```
+
+
+#2. Spatial data 
+##2.1 Calculate Spatial data (MEMs)
+```{r}
+#Moran Eigenvector Maps for spatial environment 
+library('codep')
+library('adespatial')
+library('rnaturalearth')
+library('rnaturalearthdata')
+library('raster')
+
+geo = read.csv('ahum.recifs.csv') %>% 
+  rename(pop = ID) %>% 
+  mutate(ID = 1:nrow(.)) %>% 
+  mutate(ID = as.character(ID))
+              
+# calculate distance between sampling locations
+DistSpatial=gcd.hf(geo[,2:3]) 
+
+# compute dbMEMs
+dbmem = dbmem(DistSpatial)
+
+# get countries polygons for plotting
+landPolygons = ne_countries(scale = 'medium')
+
+# create colorpalette for MEM
+paletteMEM = colorRampPalette(c('red','yellow','green2'))(20)
+
+# select MEM of interest
+par(mfrow=c(2,3))
+
+for (i in 1:3) {
+  
+MoI = paste0('MEM',i)
+plot(geo[,3:2], pch=21, bg=paletteMEM[cut(dbmem[,MoI], breaks = 20)])
+plot(landPolygons, add=T, col='grey')
+
+}
+
+```
+
+
+##2.2 Extract dbMEMs
+```{r}
+# Convert dbmem to a data frame
+dbmem_df <- as.data.frame(dbmem) %>% 
+  tibble::rownames_to_column(var = "ID")
+
+# Left join 'dbmem_df' with the 'geo' data frame based on the 'ID' column
+dbmem_with_reef <- dbmem_df %>%  left_join(geo)
+
+dbmem_pca <- dbmem_with_reef %>% dplyr::select(c(pop, MEM1, MEM2, MEM3)) %>% 
+  rename(Reef = pop)
+
+#save(dbmem_pca, file = "dbmem_pca.RData")
+```
+
+
+#3 Non-thermal environmental data
+##3.1 Calculate Env PC1 and PC2
+```{r}
+library(tidyverse)
+library(vegan)
+library(GGally)
+library(corrplot)
+library(car)
+library(scales)
+library(ggrepel)
+library(gclus)
+library(ape)
+#set up non-thermal variables. Remove any DHW-related variables. 
+# i think will need to set up a dataframe with environmental variables only? Unsure. 
+acro.recifs <- read.csv("Ahum_nonthermal.csv") %>% 
+  dplyr::select(-ID, -POI_LON, -POI_LAT, -DIST)
+
+
+nontherm.var <- acro.recifs %>% dplyr::select(POI_ID, CHL_me_002, FE_me_002, O2_me_002, PH_me_002, NO3_me_002, PO4_me_002, SPM_me_002, SSS_me_002, SCV_me_002) %>% 
+      rename(Reef = POI_ID) 
+
+
+#save(nontherm.var, file = "nontherm.var.RData")
+
+#scale and centre the data but not lat/lon
+envdat.phy.scaled <- scale(nontherm.var[,-c(1:3)],
+                          center=TRUE, # center data by subtracting column means 
+                           scale=TRUE) # divide centered data by standard deviation
+
+#run RDA function for PCA without the ID/lat/long
+env.pca <- rda(envdat.phy.scaled[,-c(1:3)])  
+
+#run the PCA 
+env.pca
+
+summary(env.pca, display = NULL)
+screeplot(env.pca)
+
+#extract first two PCs
+selected_components <- scores(env.pca, choices=1:2, display='sites')
+
+# Combine the selected principal components with the POI_ID (reef names)
+proxy_data <- cbind(acro.recifs["POI_ID"], selected_components)
+
+envPC_data <- proxy_data %>% 
+  rename(Reef = POI_ID) %>% 
+  rename(Env.PC1 = PC1) %>% 
+  rename(Env.PC2 = PC2) 
+# Print the first few rows of the proxy_data dataframe to verify the results
+head(envPC_data)
+
+```
+
+#4. Host Cluster data 
+##4.1 Load host cluster admixture 
+```{r}
+load("qmatrix.RData")
+hostcluster <- qmatrix %>% 
+  rename(Reef = Site)
+
+```
+
+#5 Join data sets 
+
+```{r}
+#join cluster + non-thermal environment 
+host.env <- hostcluster %>% left_join(., envPC_data)
+
+#join above with spatial data and make ind and reef factors 
+all.var <- host.env %>% left_join(., dbmem_pca) %>% 
+  mutate(Ind = as.factor(Ind)) %>% 
+  mutate(Reef = as.factor(Reef))
+
+#changing ind and reef to be at the beginning of the dataframe 
+all.var <- all.var %>% dplyr::select(Reef, everything()) %>% 
+dplyr::select(Ind, everything()) 
+
+
+library(stringr)
+
+all.var <- all.var %>%
+  mutate(Ind = if_else(str_detect(Ind, 'A ten193'), 'A ten 193', Ind))
+
+
+load("snp.acro.RData")
+acro.depth <- snp.acro %>% dplyr::select(Vial, Depth) %>% 
+  rename(Ind = Vial)
+
+all.var <- all.var %>% left_join(acro.depth) 
+  
+```
+
+#6. Full RDA
+##6.1 
+```{r}
+pred <- all.var[3:11]
+```
+
+```{r}
+pred.pca <- rda(pred, scale = T)
+summary(pred.pca)$cont
+```
+
+```{r}
+screeplot(pred.pca, main = "Screeplot: Eigenvalues of Acropora Predictor Variables")
+```
+
+```{r}
+round(scores(pred.pca, choices=1:8, display="species", scaling=0), digits=3)
+```
+**We know that 40% of variance in predictors is explaiend by the first PC axis and 28% by second PC axis. The strongest predictors associated with PC1 are recent meanDHW, DHW2020, meanSST, and maxSST, and MMM**
+
+
+```{r}
+acro.rda <- rda(gen.imp ~ ., data = pred, scale=T)
+acro.rda
+```
+
+##Run backward stepwise model
+```{r}
+library(vegan)
+# Use backward selection to identify significant thermal environmental variables
+ord_acro <- dbrda(gen ~ ., data = pred)
+
+sort(vif.cca(ord_acro)) 
+
+os_acro_back <- ordistep(ord_acro, direction = "both", permutations = 999)
+anova(os_acro_back, by = 'margin')
+
+```
+
+```{r}
+RsquareAdj(acro.rda)
+#adjusted R squared does not explain a lot. we need to use conditional factors to explain population structure before running the thermal models. 
+#environmental (non thermal) variables and host cluster accounts for 5.7% of variation of neutral genetic structure 
+```
+
+**So we will include significant environmental factors as conditional effects in the thermal model. Cluster 2, Cluster 3, EnvPC1, EnvPC2, MEM1, MEM2, and MEM3**
+
+#7. Run partial RDA
+##7.1 Join thermal metrics to dataset 
+```{r}
+load("site.therm.RData")
+load("snp.acro.RData")
+therm <- snp.acro %>% left_join(site.therm) %>% 
+  rename(Ind = Vial) %>% 
+  dplyr::select(-Depth)
+
+```
+
+
+
+```{r}
+pred2 <- env[4:22]
+```
+
+```{r}
+pred.pca2 <- rda(pred2, scale = T)
+summary(pred.pca2)$cont
+```
+
+```{r}
+screeplot(pred.pca2, main = "Screeplot: Eigenvalues of Wolf Predictor Variables")
+```
+
+```{r}
+round(scores(pred.pca2, choices=1:10, display="species", scaling=0), digits=3)
+```
+
+
+```{r}
+library(corrplot)
+pred2 %>% cor %>% corrplot()
+
+pred3 <- pred2 %>% dplyr::select(recent.meanDHW, DHW4, returnDHW6, MMM, catBleaching)
+pred3 %>% cor %>% corrplot()
+
+```
+
+
+##Run backward stepwise model
+```{r}
+library(vegan)
+# Use backward selection to identify significant thermal environmental variables
+ord_acro_therm <- dbrda(gen.imp ~ ., data = pred3)
+
+sort(vif.cca(ord_acro_therm)) 
+
+os_acro_therm <- ordistep(ord_acro_therm, direction = "forward", permutations = 999)
+anova(os_acro_therm, by = 'margin')
+
+```
+
+
+
+
+
+
+#left join thermal and environmental data. 
+```{r}
+therm_red <- therm %>% dplyr::select(Ind, recent.meanDHW, DHW4, returnDHW6, MMM, catBleaching)
+
+env <- therm_red %>% left_join(., all.var) %>% 
+  dplyr::select(-Ind) %>% 
+  rename(AHCL1 = "Cluster 1") %>% 
+   rename(AHCL2 = "Cluster 2") %>% 
+   rename(AHCL3 = "Cluster 3")
+```
+
+#run partial RDA
+```{r}
+acro.rda.therm <- rda(gen.imp ~ recent.meanDHW + DHW4 + returnDHW6 + catBleaching + Condition(AHCL2 + AHCL3 + MEM1 + MEM2 + MEM3), data=env, scale=T)
+
+acro.rda.therm
+```
+
+Cluster 2, Cluster 3, EnvPC1, EnvPC2, MEM1, MEM2, and MEM3**
+
+```{r}
+summary(acro.rda.therm)
+anova(acro.rda.therm)
+```
+
+
+```{r}
+RsquareAdj(acro.rda.therm)
+#adjusted R squared does not explain a lot. we need to use conditional factors to explain population structure before running the thermal models. 
+```
+
+```{r}
+vif.cca(acro.rda.therm)
+```
+
+```{r}
+plot(acro.rda.therm, scaling=3)  ## d.fault is axes 1 and 2
+```
+**SNPs are in red and the individuals are the black circles. Blue vectors are enviro predictors** 
+
+
+```{r}
+load.rda <- summary(acro.rda.therm)$species[,1:3]
+
+hist(load.rda[,1], main="Loadings on RDA1")
+hist(load.rda[,2], main="Loadings on RDA2")
+hist(load.rda[,3], main="Loadings on RDA3") 
+```
+**Here we are looking at normality at the first 3 PCs**
+
+
+```{r}
+outliers <- function(x,z){
+  lims <- mean(x) + c(-1, 1) * z * sd(x) ## f.nd loadings +/- z SD from mean loading     
+  x[x < lims[1] | x > lims[2]]           # locus names in these tails
+}
+```
+**This function just identifies SNPs that load in the tails of the distributions from the 3 histograms above** 
+
+
+
+```{r}
+cand1 <- outliers(load.rda[,1], 3) ## 20 SNPs
+cand2 <- outliers(load.rda[,2], 3) ## 16 SNPs
+cand3 <- outliers(load.rda[,3], 3) ## 22 SNPs
+
+acro.rda.cand <- c(names(cand1), names(cand2), names(cand3)) ## j.st the names of the candidates
+
+length(acro.rda.cand[duplicated(acro.rda.cand)]) ## 2 duplicate detections (detected on multiple RDA axes)
+```
+**We are using a stringent cut-off of 3 SD outside of normal distribution. We can alter this but 3 is a good standard to keep loci under very strong selection and we still get 56 SNPs** 
+
+```{r}
+#remove SNPs that are duplicated on multiple PCs
+acro.rda.cand <- acro.rda.cand[!duplicated(acro.rda.cand)] ## 1.4 unique candidates 
+```
+
+
+```{r}
+# Set up the color scheme for plotting:
+bgcol  <- ifelse(colnames(gen) %in% acro.rda.cand, 'gray32', '#00000000')
+snpcol <- ifelse(colnames(gen) %in% acro.rda.cand, 'red', '#00000000')
+
+## a.es 1 & 2 - zooming in to just the SNPs here...
+plot(acro.rda.therm, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), main="Acropora RDA, axes 1 and 2")
+points(acro.rda.therm, display="species", pch=21, cex=1, col="gray32", bg='#f1eef6', scaling=3)
+points(acro.rda.therm, display="species", pch=21, cex=1, col=bgcol, bg=snpcol, scaling=3)
+text(acro.rda.therm, scaling=3, display="bp", col="#0868ac", cex=1)
+
+## a.es 2 & 3
+plot(acro.rda.therm, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(2,3), main="Acropora RDA, axes 2 and 3")
+points(acro.rda.therm, display="species", pch=21, cex=1, col="gray32", bg='#f1eef6', scaling=3, choices=c(2,3))
+points(acro.rda.therm, display="species", pch=21, cex=1, col=bgcol, bg=snpcol, scaling=3, choices=c(2,3))
+text(acro.rda.therm, scaling=3, display="bp", col="#0868ac", cex=1, choices=c(2,3))
+```
+
+**Which predictors are most strongly correlated? 
+```{r}
+intersetcor(acro.rda.therm)[,1:3]
+```
+**Recent mean DHW is most strongly correlated with RDA1 and 2; return DHW6 with RDA2; DHW4 quite homogenous across all 3 axes; cat bleaching mostly with RDA3** 
+
+
+
+
+
+##Now we can plot to see which outlier SNPs are associated with what thermal variables
+```{r}
+
+## just the names of the candidates
+acro.rda.cand <- c(names(cand1), names(cand2), names(cand3)) 
+
+ncand <- length(cand1) + length(cand2) + length(cand3)
+ncand
+
+#58 SNPs using a SD of 3 
+```
+
+
+```{r}
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+```
+
+
+```{r}
+foo <- matrix(nrow=(ncand), ncol=4)  # 8 columns for 8 predictors
+colnames(foo) <- c("recent.meanDHW", "DHW4", "returnDHW6", "catBleaching")
+
+# Initialize a matrix to store correlations
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- gen[,nam]
+  foo[i,] <- apply(env,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo)  
+head(cand)
+```
+
+
+```{r}
+length(cand$snp[duplicated(cand$snp)])  
+cand <- cand[!duplicated(cand$snp),] # remove duplicate detections
+```
+
+```{r}
+#function to add the main predictor for each candidate SNP, and to give the correlation. 
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,8] <- names(which.max(abs(bar[4:7]))) # gives the variable
+  cand[i,9] <- max(abs(bar[4:11]))              # gives the correlation
+}
+
+colnames(cand)[8] <- "predictor"
+colnames(cand)[9] <- "correlation"
+
+table(cand$predictor) 
+```
+
+
+```{r}
+#here we assign a colour to each predictor in order to colour code candidate SNPs in the plot
+sel <- cand$snp
+env <- cand$predictor
+env[env=="MEM1"] <- '#1f78b4'
+env[env=="MEM2"] <- '#a6cee3'
+env[env=="MEM3"] <- '#6a3d9a'
+env[env=="pop.DHW2020"] <- '#e31a1c'
+env[env=="pop.DHW3"] <- '#33a02c'
+env[env=="pop.DHW6"] <- '#ffff33'
+env[env=="pop.maxDHW"] <- '#fb9a99'
+env[env=="pop.varSST"] <- '#b2df8a'
+
+# color by predictor:
+col.pred <- rownames(acro.rda$CCA$v) # pull the SNP names
+
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+
+col.pred[regexpr('#.*', col.pred)==-1] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#1f78b4','#a6cee3','#6a3d9a','#e31a1c','#33a02c','#ffff33','#fb9a99','#b2df8a')
+```
+
+
+
+```{r}
+# axes 1 & 2
+plot(acro.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(acro.rda, display="species", pch=21, cex=1, col="gray32", bg=col.pred, scaling=3)
+points(acro.rda, display="species", pch=21, cex=1, col=empty.outline, bg=empty, scaling=3)
+text(acro.rda, scaling=3, display="bp", col="#0868ac", cex=1)
+legend("bottomright", legend=c("MEM1","MEM2","MEM3", "pop.DHW2020", "pop.DHW3", "pop.DHW6", "pop.maxDHW","pop.varSST"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(acro.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(acro.rda, display="species", pch=21, cex=1, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(acro.rda, display="species", pch=21, cex=1, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(acro.rda, scaling=3, display="bp", col="#0868ac", cex=1, choices=c(1,3))
+legend("bottomright", legend=c("MEM1","MEM2","MEM3", "pop.DHW2020", "pop.DHW3", "pop.DHW6", "pop.maxDHW","pop.varSST"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+```
+
+

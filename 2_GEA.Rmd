@@ -1,0 +1,678 @@
+---
+title: "2_GEA"
+author: "M.Marzonie"
+date: "2023-07-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Gene-environment association using RDA analysis
+
+##8.1 Calcualte allele frequencies
+```{r}
+# Calculate allele frequencies for each site
+allele_freqs = data.frame(rraf(acro_gen, by_pop=TRUE, correction = FALSE), check.names = FALSE)
+
+# Keep only the first of the two alleles for each SNP (since p=1-q).
+allele_freqs = allele_freqs[, seq(1, dim(allele_freqs)[2], 2)]
+
+# Export allele frequencies
+write.csv(allele_freqs, file = "allele_freqs.csv", row.names = TRUE)
+```
+
+
+
+##8.2 Spatial data (MEMs)
+```{r}
+#Moran Eigenvector Maps for spatial environment 
+library('codep')
+library('adespatial')
+library('rnaturalearth')
+library('rnaturalearthdata')
+library('raster')
+
+geo = read.csv('ahum.recifs.csv') %>% 
+  rename(pop = ID) %>% 
+  mutate(ID = 1:nrow(.)) %>% 
+  mutate(ID = as.character(ID))
+              
+# calculate distance between sampling locations
+DistSpatial=gcd.hf(geo[,2:3]) 
+
+# compute dbMEMs
+dbmem = dbmem(DistSpatial)
+
+# get countries polygons for plotting
+landPolygons = ne_countries(scale = 'medium')
+
+# create colorpalette for MEM
+paletteMEM = colorRampPalette(c('red','yellow','green2'))(20)
+
+# select MEM of interest
+par(mfrow=c(2,3))
+
+for (i in 1:3) {
+  
+MoI = paste0('MEM',i)
+plot(geo[,3:2], pch=21, bg=paletteMEM[cut(dbmem[,MoI], breaks = 20)])
+plot(landPolygons, add=T, col='grey')
+
+}
+
+```
+**Each dbMEM varies across sampling locations. Each eigenvector is descsribing the proximity between sampling sites at different levels (e.g. MEM1: north-south axis, MEM2: a few sites close together in the north, etc.)**
+
+##8.3 Extract dbMEMs
+```{r}
+# Convert dbmem to a data frame
+dbmem_df <- as.data.frame(dbmem) %>% 
+  tibble::rownames_to_column(var = "ID")
+
+# Left join 'dbmem_df' with the 'geo' data frame based on the 'ID' column
+dbmem_with_reef <- dbmem_df %>%  left_join(geo)
+
+dbmem_pca <- dbmem_with_reef %>% dplyr::select(c(pop, MEM1, MEM2, MEM3)) %>% 
+  rename(Reef = pop)
+
+save(dbmem_pca, file = "dbmem_pca.RData")
+```
+
+
+
+
+##8.4 RECIFS non-thermal environmental data
+```{r}
+library(tidyverse)
+library(vegan)
+library(GGally)
+library(corrplot)
+library(car)
+library(scales)
+library(ggrepel)
+library(gclus)
+library(ape)
+#set up non-thermal variables. Remove any DHW-related variables. 
+# i think will need to set up a dataframe with environmental variables only? Unsure. 
+acro.recifs <- read.csv("Ahum_nonthermal.csv") %>% 
+  dplyr::select(-ID, -POI_LON, -POI_LAT, -DIST)
+
+
+nontherm.var <- acro.recifs %>% dplyr::select(POI_ID, CHL_me_002, FE_me_002, O2_me_002, PH_me_002, NO3_me_002, PO4_me_002, SPM_me_002, SSS_me_002, SCV_me_002) %>% 
+      rename(Reef = POI_ID) 
+
+
+save(nontherm.var, file = "nontherm.var.RData")
+
+#scale and centre the data but not lat/lon
+envdat.phy.scaled <- scale(nontherm.var[,-c(1:3)],
+                          center=TRUE, # center data by subtracting column means 
+                           scale=TRUE) # divide centered data by standard deviation
+
+#run RDA function for PCA without the ID/lat/long
+env.pca <- rda(envdat.phy.scaled[,-c(1:3)])  
+
+#run the PCA 
+env.pca
+
+summary(env.pca, display = NULL)
+screeplot(env.pca)
+
+#extract first two PCs
+selected_components <- scores(env.pca, choices=1:2, display='sites')
+
+# Combine the selected principal components with the POI_ID (reef names)
+proxy_data <- cbind(acro.recifs["POI_ID"], selected_components)
+
+envPC_data <- proxy_data %>% 
+  rename(Reef = POI_ID) %>% 
+  rename(Env.PC1 = PC1) %>% 
+  rename(Env.PC2 = PC2) 
+# Print the first few rows of the proxy_data dataframe to verify the results
+head(envPC_data)
+
+```
+
+
+
+
+
+##8.4 Thermal history data 
+```{r}
+#we want to create dataframes for population level environmental data, as we will be looking at population level allele frequencies. 
+
+load("SiteDisturbanceHistory_DHW.RData") #this has thermal history data for each reef
+load("snp.acro.RData")
+
+#DHW and thermal history data 
+site.bleachings <- site.bleachings %>% dplyr::select(Reef, Site, maxDHW, meanDHW, recent.maxDHW, recent.meanDHW, DHW3, DHW4, DHW6, DHW8, DHW9, returnDHW3, returnDHW4, returnDHW6, meanSST, returnDHW4, returnDHW6, meanSST, minSST, maxSST, varSST, MMM)
+
+#left join with the metadata from genetic analysis (ind / pops)
+acro.therm <- left_join(snp.acro, site.bleachings)
+
+#group by reef and average variables across site
+site.therm <- acro.therm %>% dplyr::select(Reef, Site, DHW2020, maxDHW, meanDHW, recent.maxDHW, recent.meanDHW, DHW3, DHW4, DHW6, DHW8, DHW9, returnDHW3, returnDHW4, returnDHW6, meanSST, minSST, maxSST, varSST, MMM) %>% 
+  distinct()
+
+save(site.therm, file = "site.therm.RData")
+
+#take averages of each Reef (because we have multiple sites per reef and want to average these. they will not be very different at the site level anyway)
+pop.therm <- site.therm %>%
+  group_by(Reef) %>%
+  summarise(
+    pop.DHW2020 = mean(DHW2020),
+    pop.maxDHW = mean(maxDHW),
+    pop.meanDHW = mean(meanDHW),
+    pop.recent.maxDHW = mean(recent.maxDHW),
+    pop.recent.meanDHW = mean(recent.meanDHW),
+    pop.DHW3 = mean(DHW3),
+    pop.DHW4 = mean(DHW4),
+    pop.DHW6 = mean(DHW6),
+    pop.DHW8 = mean(DHW8),
+    pop.DHW9 = mean(DHW9),
+    pop.returnDHW3 = mean(returnDHW3),
+    pop.returnDHW4 = mean(returnDHW4),
+    pop.returnDHW6 = mean(returnDHW6),
+    pop.meanSST = mean(meanSST),
+    pop.minSST = mean(minSST),
+    pop.maxSST = mean(maxSST),
+    pop.varSST = mean(varSST),
+    pop.MMM = mean(MMM)
+  )
+
+#re-level by latitude and so that we can merge with the db-mem dataframe using cbind function
+reef_order <- c("Osprey", "Bougainville", "Moore", "Holmes", "Chilcott", 
+                        "Herald", "Lihou", "Flinders", "Marion", "Frederick", "Wreck")
+
+pop.therm <- pop.therm %>%
+  mutate(Reef = factor(Reef, levels = reef_order)) %>%
+  arrange(Reef)
+
+save(pop.therm, file = "pop.therm.RData")
+write.csv(pop.therm, file="pop.therm.csv", row.names = FALSE)
+```
+
+
+```{r}
+#load population host genetic clusters 
+load("pop.cluster.RData")
+```
+
+
+```{r}
+#combine thermal, non-thermal ENV PC1 and PC2, and db-MEM spatial data into one dataframe. 
+pop.env <- pop.therm %>% left_join(., envPC_data)
+pred <- pop.env %>% 
+  left_join(., dbmem_pca) %>% 
+  left_join(., pop.cluster) %>% 
+  tibble::column_to_rownames("Reef")
+pred <- round(pred, digits = 2)
+
+save(pred, file = "pred.RData")
+```
+
+
+```{r}
+#check correlation of thermal variables.
+library(corrplot)
+pred  %>% cor() 
+pred %>% cor() %>% corrplot()
+```
+1. We exclude minSST, maxSST because high correlation to meanSST and DHW2020
+2. We exclude returnDHW3 and returnDHW4 because high correlation to DHW3 and DHW4
+3. We exclude recent.meanDHW bc correlation between DHW2020 and meanSST
+4. We exclude meanSST because correlated to MMM
+5. We exclude DHW8 and keep DHW9
+6. We exclude recent maxDHW and keep maxDHW - provides a good contrast with DHW2020 (recent history compared to long-term)
+
+**the remaining variables are under r = |0.8| so can proceed with running thermal models**
+
+```{r}
+ pred2 <- pred %>% dplyr::select(-pop.returnDHW3, -pop.returnDHW4,-pop.minSST, -pop.maxSST,-pop.meanSST, -pop.DHW8, -pop.maxDHW, -pop.recent.meanDHW, -pop.MMM, -pop.DHW6, -MEM3 )
+
+pred2 %>% cor() %>% corrplot()
+pred2 %>% cor()
+
+pred3 <- pred2 %>% dplyr::select(-pop.DHW9, -pop.DHW3, -MEM2,-pop.varSST, -pop.meanDHW, -AHCL2, - Env.PC1)
+pred3 %>% cor() %>% corrplot()
+#only issue here still is with pop.DHW2020 and Env PC1 but it's still under r = |0.80| so can re-assess. 
+```
+
+
+```{r}
+library(vegan)
+# Use backward selection to identify significant thermal environmental variables
+ord_acro <- dbrda(allele_freqs ~ ., data = pred3)
+
+sort(vif.cca(ord_acro)) 
+
+os_acro_back <- ordistep(ord_acro, direction = "backward", permutations = 999)
+anova(os_acro_back, by = 'margin')
+```
+
++ pop.recent.maxDHW + pop.DHW3
+#Now we run the separate models 
+```{r}
+#full model formula: pop.DHW2020 + pop.recent.maxDHW + pop.DHW4 + pop.returnDHW6 +      Env.PC1 + Env.PC2 + MEM1 
+
+library(vegan)
+acro.rda <- rda(allele_freqs ~ ., data=pred3, scale=T)
+acro.rda
+
+acro.rda.nontherm <- rda(allele_freqs ~ Env.PC2 + Condition(MEM1 + pop.DHW2020 + pop.recent.maxDHW + pop.DHW4 + pop.returnDHW6 + AHCL1), data=pred3, scale=T)
+
+acro.rda.therm <- rda(allele_freqs ~ pop.DHW2020 + pop.recent.maxDHW + pop.DHW4 + pop.returnDHW6 + Condition(MEM1 +Env.PC2 + AHCL1), data=pred3, scale=T)
+
+acro.rda.geo <- rda(allele_freqs ~ MEM1 + Condition(pop.DHW2020 + pop.recent.maxDHW + pop.DHW4 + pop.returnDHW6  +  Env.PC2 + AHCL1 + AHCL3), data=pred3, scale=T)
+
+acro.neutral <- rda(allele_freqs ~ AHCL1 + AHCL3 + Condition(pop.DHW2020 + pop.recent.maxDHW + pop.DHW4 + pop.returnDHW6  +  Env.PC2 + MEM1), data=pred3, scale=T)
+
+```
+
+```{r}
+summary(acro.rda)
+summary(acro.rda.therm)
+summary(acro.rda.nontherm)
+  #thermal metrics are the strongest predictor which is cool!
+summary(acro.rda.geo)
+summary(acro.neutral)
+```
+
+```{r}
+anova(acro.rda)
+anova(acro.rda.therm)
+anova(acro.rda.nontherm)
+anova(acro.rda.geo)
+anova(acro.neutral)
+```
+
+
+```{r}
+RsquareAdj(acro.rda)
+RsquareAdj(acro.rda.nontherm)
+RsquareAdj(acro.rda.therm)  #thermal metrics are the strongest predictor which is cool!
+RsquareAdj(acro.rda.geo)
+RsquareAdj(acro.neutral)
+
+```
+
+
+
+```{r}
+summary(eigenvals(acro.rda, model = "constrained"))
+```
+
+
+```{r}
+screeplot(acro.rda)
+```
+
+```{r}
+signif.full <- anova.cca(acro.rda, parallel=getOption("mc.cores")) # default is permutation=999
+signif.full
+```
+
+
+
+```{r}
+signif.axis <- anova.cca(acro.rda, by="axis", parallel=getOption("mc.cores"))
+signif.axis
+```
+
+##VIF scores
+```{r}
+#should be below 10
+vif.cca(acro.rda)
+```
+
+
+```{r}
+plot(acro.rda, scaling=3)          # default is axes 1 and 2
+plot(acro.rda, choices = c(1, 3), scaling=3)  #this will show axes 1 and 3
+
+#the SNPs are in red at the centre of the plot and black dots are each population. 
+```
+
+
+
+```{r}
+load.rda <- summary(acro.rda)$species[,1:3]
+
+hist(load.rda[,1], main="Loadings on RDA1")
+hist(load.rda[,2], main="Loadings on RDA2")
+hist(load.rda[,3], main="Loadings on RDA3")
+
+#here we can see that most SNP loadings are at the centre of the distribution and do not have a relationship with the environmental predictors. Loadings in the tails are more likely to be under selection as a function of the predictors in the model. 
+```
+
+
+```{r}
+#outlier function 
+outliers <- function(x,z){
+  lims <- mean(x) + c(-1, 1) * z * sd(x) ## f.nd loadings +/- z SD from mean loading     
+  x[x < lims[1] | x > lims[2]]           # locus names in these tails
+}
+```
+
+
+```{r}
+#apply function to first three axes 
+cand1 <- outliers(load.rda[,1],2.5) # 38
+cand2 <- outliers(load.rda[,2],2.5) # 69
+cand3 <- outliers(load.rda[,3],2.5) # 34
+
+## just the names of the candidates
+acro.rda.cand <- c(names(cand1), names(cand2), names(cand3)) 
+
+ncand <- length(cand1) + length(cand2) + length(cand3)
+ncand
+
+#268 SNPs if we use SD of 2. z-score of 3 gives us 0 SNPs, 2.5 gives us only 31. Will keep at 2 for now. 
+```
+
+
+```{r}
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+```
+
+
+```{r}
+# Initialize a matrix to store correlations
+cor_matrix <- matrix(nrow = nrow(cand), ncol = ncol(pred))
+colnames(cor_matrix) <- colnames(pred)
+
+# Loop through each candidate SNP
+for (i in 1:nrow(cand)) {
+  snp_name <- cand[i, 2]
+  snp_gen <- allele_freqs[, snp_name]
+  
+  # Calculate correlations with each predictor
+  cor_matrix[i, ] <- sapply(1:ncol(pred), function(j) cor(pred[, j], snp_gen))
+}
+
+# Combine the correlation matrix with the candidate data
+cand <- cbind.data.frame(cand, cor_matrix)
+head(cand)
+```
+
+
+```{r}
+length(cand$snp[duplicated(cand$snp)])  
+cand <- cand[!duplicated(cand$snp),] # remove duplicate detections
+```
+
+```{r}
+#function to add the main predictor for each candidate SNP, and to give the correlation. 
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,12] <- names(which.max(abs(bar[4:11]))) # gives the variable
+  cand[i,13] <- max(abs(bar[4:11]))              # gives the correlation
+}
+
+colnames(cand)[12] <- "predictor"
+colnames(cand)[13] <- "correlation"
+
+table(cand$predictor) 
+```
+
+
+```{r}
+#here we assign a colour to each predictor in order to colour code candidate SNPs in the plot
+sel <- cand$snp
+env <- cand$predictor
+env[env=="MEM1"] <- '#1f78b4'
+env[env=="MEM2"] <- '#a6cee3'
+env[env=="MEM3"] <- '#6a3d9a'
+env[env=="pop.DHW2020"] <- '#e31a1c'
+env[env=="pop.DHW3"] <- '#33a02c'
+env[env=="pop.DHW6"] <- '#ffff33'
+env[env=="pop.maxDHW"] <- '#fb9a99'
+env[env=="pop.varSST"] <- '#b2df8a'
+
+# color by predictor:
+col.pred <- rownames(acro.rda$CCA$v) # pull the SNP names
+
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+
+col.pred[regexpr('#.*', col.pred)==-1] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#1f78b4','#a6cee3','#6a3d9a','#e31a1c','#33a02c','#ffff33','#fb9a99','#b2df8a')
+```
+
+
+
+```{r}
+# axes 1 & 2
+plot(acro.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(acro.rda, display="species", pch=21, cex=1, col="gray32", bg=col.pred, scaling=3)
+points(acro.rda, display="species", pch=21, cex=1, col=empty.outline, bg=empty, scaling=3)
+text(acro.rda, scaling=3, display="bp", col="#0868ac", cex=1)
+legend("bottomright", legend=c("MEM1","MEM2","MEM3", "pop.DHW2020", "pop.DHW3", "pop.DHW6", "pop.maxDHW","pop.varSST"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(acro.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(acro.rda, display="species", pch=21, cex=1, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(acro.rda, display="species", pch=21, cex=1, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(acro.rda, scaling=3, display="bp", col="#0868ac", cex=1, choices=c(1,3))
+legend("bottomright", legend=c("MEM1","MEM2","MEM3", "pop.DHW2020", "pop.DHW3", "pop.DHW6", "pop.maxDHW","pop.varSST"), bty="n", col="gray32", pch=21, cex=1, pt.bg=bg)
+
+```
+
+
+
+
+##Try out LFMM to identify outlier loci 
+```{r}
+pred.pca <- rda(pred, scale=T)
+summary(pred.pca)$cont
+```
+
+```{r}
+screeplot(pred.pca, main = "Screeplot: Eigenvalues of Acropora Predictor Variables")
+```
+
+```{r}
+## c.rrelations between the PC axis and predictors:
+round(scores(pred.pca, choices=1:8, display="species", scaling=0), digits=3)
+```
+**We know from the above tests that 34% of variance in predictors is explained by the first PC axis and 25% by the second PC. We can follow up with an LFMM model using the second axis as a predictor is we wanted. The strongest correlations with PC1 are DHW2020, varSST, maxDHW, and MEM1** 
+
+
+
+##Partial RDA
+```{r}
+# Perform RDA while controlling for geographical location
+acro.rda = rda(allele_freqs ~ pop.DHW2020 + pop.DHW3 + pop.varSST + pop.maxDHW + MEM1 + MEM2 + MEM3,
+           data = pred, scale = TRUE)
+
+acro.rda.therm <- rda(allele_freqs ~ pop.DHW2020 + pop.DHW3 +pop.varSST + pop.maxDHW +  Condition(MEM1 + MEM2 + MEM3), data=pred, scale=T)
+
+acro.rda.geo <- rda(allele_freqs ~ MEM1 + MEM2 + MEM3 + Condition(pop.DHW2020 + pop.DHW3 +pop.varSST + pop.maxDHW), data=pred, scale=T)
+```
+
+
+```{r}
+RsquareAdj(acro.rda)  
+RsquareAdj(acro.rda.therm)  
+RsquareAdj(acro.rda.geo)
+```
+
+
+
+#Conduct outlier test with OutFLANK
+```{r}
+# Load packages
+library(OutFLANK)
+library(qvalue)
+library(dartR)
+```
+
+
+```{r}
+# Run OutFLANK using dartR wrapper script
+outflnk = gl.outflank(acro_gen, qthreshold = 0.05, plot = FALSE)
+## Calculating FSTs, may take a few minutes...
+
+# Extract OutFLANK results
+outflnk.df = outflnk$outflank$results
+
+# Remove duplicated rows for each SNP locus
+rowsToRemove = seq(1, nrow(outflnk.df), by = 2)
+outflnk.df = outflnk.df[-rowsToRemove, ]
+
+# Print number of outliers (TRUE)
+outflnk.df$OutlierFlag %>% summary
+##    Mode   FALSE    TRUE 
+##logical    2437      45 
+```
+
+
+```{r}
+# Extract outlier IDs
+outlier_indexes = which(outflnk.df$OutlierFlag == TRUE)
+outlierID = locNames(acro_gen)[outlier_indexes]
+outlierID
+
+#here are the 45 outlier ID numbers. This refers to the position and which chromosome 
+#[1] "9815843-12-A/G"   "9390163-11-G/A"   "11478926-11-C/G" 
+# [4] "9476116-61-C/T"   "11476596-18-G/C"  "11476210-42-G/A" 
+# [7] "9457475-34-A/G"   "9446989-19-G/A"   "11478097-36-A/C" 
+#[10] "9485809-53-T/A"   "9432676-13-C/A"   "9449238-23-G/A"  
+#[13] "9466208-6-A/G"    "9810313-39-C/A"   "71350021-60-G/C" 
+#[16] "71352585-51-C/A"  "9487408-11-A/C"   "9443962-64-A/G"  
+#[19] "9427442-27-A/T"   "11494808-28-T/C"  "9410915-66-T/A"  
+#[22] "9366338-58-A/G"   "11488759-30-T/C"  "9367146-33-C/G"  
+#[25] "9426591-52-G/A"   "71355508-11-C/A"  "9452948-8-T/C"   
+#[28] "43531377-22-G/A"  "43547272-65-T/G"  "9449442-36-C/T"  
+#[31] "9426338-30-C/A"   "9813335-22-G/T"   "9432903-32-C/A"  
+#[34] "100255379-64-A/G" "9485030-10-G/T"   "9461397-7-C/T"   
+#[37] "11488735-6-T/C"   "43577150-7-C/G"   "71350378-11-A/G" 
+#[40] "11479309-34-G/A"  "11471311-38-T/A"  "71349057-32-G/A" 
+#[43] "43552087-45-A/G"  "39063043-12-A/G"  "43561768-48-G/T" 
+```
+
+
+```{r}
+# Convert Fsts <0 to zero
+outflnk.df$FST[outflnk.df$FST < 0] = 0 
+
+# Italic labels
+fstlab = expression(italic("F")[ST])
+hetlab = expression(italic("H")[e])
+
+# Plot He versus Fst
+ggplot(data = outflnk.df)+
+  geom_point(aes(x = He, y = FST, colour = OutlierFlag))+
+  scale_colour_manual(values = c("black","red"), labels = c("Neutral SNP","Outlier SNP"))+
+  ggtitle("OutFLANK outlier test")+
+  xlab(hetlab)+
+  ylab(fstlab)+
+  theme(legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 15, face = "bold")
+        )
+
+```
+
+
+##Outlier loci with PCAdapt 
+```{r}
+library(pcadapt)
+
+path_to_file <- "gl_geno.lfmm"
+filename <- read.pcadapt(path_to_file, type = "lfmm")
+
+x <- pcadapt(input = filename, K = 20)
+plot(x, option = "screeplot")
+plot(x, option = "screeplot", K = 10)
+
+```
+
+```{r}
+x <- pcadapt(filename, K = 3)
+summary(x)
+
+plot(x , option = "manhattan")
+
+```
+
+```{r}
+plot(x, option = "qqplot")
+
+#This plot confirms that most of the p-values follow the expected uniform distribution. However, the smallest p-values are smaller than expected confirming the presence of outliers.
+```
+
+
+```{r}
+hist(x$pvalues, xlab = "p-values", main = NULL, breaks = 50, col = "orange")
+```
+
+```{r}
+plot(x, option = "stat.distribution")
+```
+
+```{r}
+# Extract column names from 'x' to use as SNP names or IDs
+snp_names <- colnames(x)
+
+# Get the SNP names for the outlier loci
+outlier_snp_names <- snp_names[outliers_pcadapt]
+
+```
+
+```{r}
+# Assuming 'outlier_snp_names' contains the SNP names of outliers
+# Assuming 'acro.rda.cand' is your dataframe
+
+# Filter SNP identifiers that are in the outlier_snp_names vector
+filtered_snps <- acro.rda.cand[acro.rda.cand %in% outlier_snp_names]
+
+# Print the filtered SNP identifiers
+print(filtered_snps)
+```
+
+
+
+```{r}
+library(qvalue)
+qval <- qvalue(x$pvalues)$qvalues
+alpha <- 0.1
+outliers <- which(qval < alpha)
+length(outliers)
+
+outliers_pcadapt <- which(qval < alpha)
+# Extract SNP names or IDs for pcadapt outliers
+outlier_snp_ids <- snp_names[outliers_pcadapt]
+```
+
+```{r}
+padj <- p.adjust(x$pvalues,method="BH")
+alpha <- 0.1
+outliers <- which(padj < alpha)
+length(outliers)
+
+```
+
+```{r}
+padj <- p.adjust(x$pvalues,method="bonferroni")
+alpha <- 0.1
+outliers <- which(padj < alpha)
+length(outliers)
+#get less outliers using the bonferroni correction.  
+```
+
+

@@ -1,0 +1,439 @@
+---
+title: "2_GWAS"
+author: "M.Marzonie"
+date: "2023-07-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+The point of a genome-wide association study is to look at patterns from high-density SNP genotyping of unrelated individiuals, to detect putatively adaptive loci associated with a given trait (i.e. heat tolerance). 
+
+
+
+#Need to create column for cryptic species
+```{r}
+load("gl3.RData")
+load("qlong.full.acro.RData")
+qlong.full.acro
+qlong.glmm <- qlong.full.acro %>% dplyr::select(Ind, cluster)
+```
+
+#Calculate Euclidean SNP distance per individual 
+```{r}
+#calculate distance matrix 
+dist_acro <- gl.dist.ind(gl3, method = "euclidean", scale = TRUE)
+#convert to dist. object
+du_acro <- as.dist(dist_acro)
+```
+
+
+
+
+###ED50 boxplots by cryptic species
+```{r}
+
+#here, looking at how ED50 varies by host genetic cluster. not any sign difference. 
+indED50 %>% 
+  ggplot(aes(cluster, ED50, fill = cluster)) +
+    scale_fill_manual(values = cols) +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+
+#looking at same ED50 by reef and cluster. 
+indED50 %>% filter(Site != "Osprey") %>% 
+  ggplot(aes(Site, ED50, fill = Site)) +
+  #facet_wrap(~cluster) +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+
+#looking only at AHCl1 to see if patterns change by reef
+indED50_AHCL1 <- indED50 %>% filter(cluster == "AHCL1") %>% filter(Site != "Osprey")
+indED50_AHCL1 %>% 
+  ggplot(aes(Site, ED50, fill = Site)) +
+   # scale_fill_manual(values = cols) +
+  geom_boxplot() +
+  theme_PCA 
+
+
+psii$Vial <- str_replace(psii$Vial, "A hum", "A ten")
+
+
+psii.ahum <- psii %>% filter(Species == "A. cf humilis") %>% filter(Treatment == "T0") %>% 
+  dplyr::select(Vial, mean.yield, Reef, Bleaching) %>% 
+  rename(Ind = Vial) 
+
+save(psii.ahum, file = "psii.ahum.RData")
+
+ind.psii <- ind_coords.admix %>% left_join(psii.ahum) %>% 
+  filter(!is.na(mean.yield))
+
+
+ind.psii %>% 
+    ggplot(aes(cluster, mean.yield, fill = cluster)) +
+    scale_fill_manual(values = cols) +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+```
+
+
+##7.3 Merge pop gen and ED50 datasets
+```{r}
+#I think what I want here are the two possible response variables (fv/fvm) and ED50
+#then for predictor variables let's put in a few thermal history metrics and symbiont type, and host genetic PC1
+library(stringr)
+
+load("psii_metadata.RData")
+load("spED50.RData")
+load("psii.ahum.RData")
+
+
+spED50$Vial <- str_replace(spED50$Vial, "A hum", "A ten")
+
+spED50 <- spED50 %>% 
+  rename(Ind = Vial) %>% 
+  filter(Species == "A. cf humilis") %>% 
+  dplyr::select(Ind, ED50)
+spED50
+
+ED50.admix <- spED50 %>% left_join(., qlong.glmm) %>% 
+  filter(!is.na(cluster))
+
+ED50.admix2 <- ED50.admix %>% left_join(., psii.ahum) %>% 
+  filter(!is.na(mean.yield)) %>% 
+    distinct(Ind, .keep_all = TRUE)
+
+
+```
+
+
+```{r}
+#left join the Host PC1 and Host PC2 as host genetic factors 
+load("ind.coords.glmm.RData")
+ind.coords.glmm
+
+ED50.admix3 <- ED50.admix2 %>% left_join(ind.coords.glmm)
+```
+
+
+```{r}
+#now we will add in the thermal history data 
+load("kvalue_acro.RData")
+kvalue_acro <- kvalue_acro %>% mutate(kgroup = as.factor(kgroup)) %>% 
+  rename(Ind = sample_name)
+
+
+ED50.admix4 <- ED50.admix3 %>% left_join(kvalue_acro) 
+```
+
+
+```{r}
+#now we add in the important thermal history values from ch1. This is going to be: DHW4, maxDHW
+pop.therm <- read.csv("pop.therm.csv")
+therm.var <- pop.therm %>% dplyr::select(Reef, pop.recent.maxDHW, pop.DHW4, pop.returnDHW6, pop.MMM, pop.DHW2020)
+
+ED50.glmm <- ED50.admix4 %>% left_join(., therm.var)
+```
+
+
+```{r}
+library(dplyr)
+
+ED50.plink <- ED50.glmm %>% unite(plinkname, c("Reef", "Ind")) %>% 
+   mutate(plinkname = str_replace(plinkname, "_", " ")) %>% 
+  rename(taxaID = plinkname)
+
+save(ED50.plink, file = "ED50.plink.RData")
+```
+
+
+
+##Run GLMMs on ED50s
+
+```{r}
+library(corrplot)
+therm.var %>% dplyr::select(-Reef) %>% cor() %>% corrplot()
+```
+
+
+
+```{r}
+library(car)       #for regression diagnostics
+library(broom)     #for tidy output
+library(ggfortify) #for model diagnostics
+library(sjPlot)    #for outputs
+library(knitr)     #for kable
+library(effects)   #for partial effects plots
+library(ggeffects) #for effects plots in ggplot
+library(emmeans)   #for estimating marginal means
+library(MASS)      #for glm.nb
+library(MuMIn)     #for AICc
+library(tidyverse) #for data wrangling
+library(DHARMa)   #for residuals and diagnostics
+library(nlme)     #for lme
+library(lme4)      #for glmer
+library(glmmTMB)    #for glmmTMB
+library(performance) #for diagnostic plots
+library(see)   
+```
+
+
+
+#let's run linear model using ED50 ~ all variables first 
+```{r}
+lm.1 = glmm(ED50 ~ HostPC1 + HostPC2 + kgroup + pop.DHW4 + pop.MMM + pop.returnDHW6 +pop.recent.maxDHW + pop.DHW2020 + cluster, data = ED50.glmm) #all var
+lm.2 = glm(ED50~ HostPC1 + HostPC2 + cluster, data = ED50.glmm) #only host 
+lm.3 = glm(ED50~ kgroup,  data = ED50.glmm) # only symbiont 
+lm.4 = glm(ED50~ pop.DHW4 + pop.MMM + pop.returnDHW6 + pop.recent.maxDHW + pop.DHW2020, data = ED50.glmm) # only environment 
+
+AICc(lm.1, lm.2, lm.3, lm.4)
+
+#lm.1	13	339.9270		
+#lm.2	6	413.5105		
+#lm.3	6	417.4686		
+#lm.4	5	329.5845	
+
+summary(lm.1)
+summary(lm.2)
+summary(lm.3)
+summary(lm.4)
+#the interaction with DHW4 is important but not the interaction with returnDHW6 so will be used in the full dredge model.
+```
+
+```{r}
+r.squaredGLMM(lm.1)
+r.squaredGLMM(lm.2)
+r.squaredGLMM(lm.3)
+r.squaredGLMM(lm.4)
+```
+
+```{r}
+library(ggfortify)
+lm.1 %>% autoplot(which = 1:6)
+```
+
+
+
+#let's run linear model using fv/fm to account for natural bleaching ~ all variables first 
+```{r}
+lm.5 = glm(mean.yield ~ HostPC1 + HostPC2 + kgroup + pop.DHW4 + pop.MMM + pop.returnDHW6 +pop.recent.maxDHW + pop.DHW2020 + cluster, data = ED50.glmm) #all var
+lm.6 = glm(mean.yield~ HostPC1 + HostPC2 + cluster, data = ED50.glmm) #only host 
+lm.7 = glm(mean.yield~ kgroup,  data = ED50.glmm) # only symbiont 
+lm.8 = glm(mean.yield~ pop.DHW4 + pop.MMM + pop.returnDHW6 + pop.recent.maxDHW + pop.DHW2020, data = ED50.glmm) # only environment 
+
+
+AICc(lm.5, lm.6, lm.7, lm.8)
+
+#lm.5	15	-576.6511		
+#lm.6	6	-489.5591		
+#lm.7	6	-509.6386		
+#lm.8	7	-580.9851	
+
+summary(lm.5)
+summary(lm.6)
+summary(lm.7)
+summary(lm.8)
+#the interaction with DHW4 is important but not the interaction with returnDHW6 so will be used in the full dredge model.
+```
+**What is distribution of k-groups**. 
+- Random factors: k-group and/or Reef. 
+**Candidate adaptive SNPs ; polygenic scores for each individual. How many adaptive allele each individual has. 
+- For every SNP you can count % of adaptive genotypes. 
+
+
+#check R2 for the fv/fm yield models 
+```{r}
+r.squaredGLMM(lm.5)
+r.squaredGLMM(lm.6)
+r.squaredGLMM(lm.7)
+r.squaredGLMM(lm.8)
+```
+
+
+##Plot ED50 vs. fv/fm vs. bleaching category - as 3 response variables. 
+- Then you have the 3-4 
+
+
+##Now I think we need to try this test with loci outlier data only instead of Host PCs and see how the results change. 
+
+- What does the GWAS involve that's different than other approaches we are talking about. Linkage disequilibrium. SNPs in a similar location and exhibit a similar pattern. 
+- We have the positional location already. Is it a transition. 
+- How do we get it into the format. 
+
+
+
+**Let's see the comparison between ED50 and fv/fm at T0**
+```{r}
+
+```
+
+
+
+
+
+
+
+```{r}
+#are there sign. differences between the two clusters/reefs with respect to ED50
+res.aov <- aov(ED50 ~ Site * cluster, data = indED50)
+summary(res.aov)
+```
+
+```{r}
+#are there sign. differences between the two clusters/reefs with respect to ED50
+res.aov1 <- aov(ED50 ~ cluster, data = indED50)
+summary(res.aov1)
+```
+
+```{r}
+# are there sig differences for cluster and and Fv/Fm of the control treatment? 
+res.aov2 <- aov(mean.yield ~ cluster, data = ind.psii)
+summary(res.aov2)
+```
+
+
+
+
+
+# Symbiont data
+```{r}
+load("prof.data.ahum.RData")
+prof.data.ahum <- prof.data.ahum %>% dplyr::select(name, value, Vial) 
+  
+prof.data.ahum <- prof.data.ahum %>% rename(type.prof = name) 
+prof.data.ahum <- prof.data.ahum %>% rename(Ind = Vial) 
+
+load("acro_k2.RData")
+acro_k2 <- acro_k2 %>% rename(Ind = Vial)
+```
+
+
+
+```{r}
+
+
+psii.k2 %>% 
+  ggplot(aes(k_id, mean.yield, fill = k_id)) +
+    scale_fill_manual(values = cols) +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+
+psii.k2 %>% group_by(k_id) %>% 
+  summarise(n = n())
+
+#t-test to check differences in yield. 
+t.test(mean.yield ~ k_id, data = psii.k2)
+
+psii.k2  %>% 
+    ggplot(aes(k_id, Bleaching, fill = k_id)) +
+  facet_grid(~ k_id) +
+    scale_fill_manual(values = cols) +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+
+psii.k2 %>% 
+  ggplot(aes(Reef, mean.yield, fill = Reef)) +
+  scale_fill_brewer(palette = "Spectral") +
+  geom_boxplot() +
+  theme_PCA +
+  theme(legend.position = "none")
+
+# Perform one-way ANOVA
+result <- aov(mean.yield ~ Reef, data = psii.k2)
+summary(result)
+```
+
+```{r}
+proportion_data <- psii.k2 %>%
+  group_by(Bleaching, k_id) %>%
+  summarise(count = n()) %>%
+  mutate(proportion = count / sum(count))
+
+# Create the grouped bar plot using ggplot2
+ggplot(proportion_data, aes(x = factor(Bleaching), y = proportion, fill = k_id)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Proportion of Symbiont Types in Bleaching Categories",
+    x = "Bleaching Score",
+    y = "Proportion (%)"
+  ) +
+  scale_fill_discrete(name = "Symbiont Types") +
+  theme_minimal()  # Use a minimal theme for better readability
+```
+
+
+###ED50 PCA
+```{r}
+full.ed50 %>% 
+  ggplot(aes(Axis1, Axis2, fill = ED50)) +
+  geom_point(alpha = 1, shape = 21, size = 2) + 
+  scale_fill_distiller(palette = "Spectral", trans = "reverse") +
+    # custom labels
+  labs(x = xlab, y = ylab) +
+  theme_PCA
+
+#no apparent differences in heat tolerance among the cryptic species. 
+```
+
+
+
+##7.X. Cryptic species biogeography 
+```{r}
+clust_pal <- c("#E3856B", "#EEC95C","#80C4B7")
+clust_names <- c("Cluster 1", "Cluster 2", "Cluster 3")
+names(clust_pal) <- clust_names
+
+acro.pie <- qlong %>% 
+  group_by(Site, variable) %>% 
+  dplyr::summarise(mean = mean(value))
+
+acro.pie %>% arrange(variable)
+
+
+ggplot(acro.pie, aes(x = "", y = mean, fill = factor(variable))) +
+  geom_bar(position="fill", stat="identity") + coord_polar("y")+
+  facet_wrap( ~ Site) +
+  scale_fill_manual(values = clust_pal) +
+  theme_classic()+
+  theme(legend.position = c(1.1, 0.85), 
+        axis.title=element_blank(), 
+        axis.line=element_blank(),
+        axis.ticks=element_blank(), 
+        axis.text=element_blank(),
+        plot.background = element_blank(), 
+        plot.title=element_text(color="black",size=10,face="plain",hjust=0.5),
+        strip.background = element_blank())
+
+save(acro.pie, file = "acro.pie.RData")
+
+```
+
+## Top and bottom 10% ED50 performers
+```{r}
+#let's look at the highest and lowest ED50s (top and bottom 10%) and see if symbionts are distinct by these. 
+full.ed50 %>% arrange(ED50) %>% 
+  distinct(type.prof)
+
+# Select the top 10% of data
+top.ed50 <- full.ed50 %>%
+  slice_max(ED50, prop = 0.1)
+
+bottom.ed50 <- full.ed50 %>% 
+  slice_min(ED50, prop = 0.1)
+
+top.bottom.ed50 <- left_join(top.ed50, bottom.ed50)
+
+ggplot(top.bottom.ed50, x = Ind, y = ED50, fill = type.prof) +
+  geom_point()
+```
+
+
+

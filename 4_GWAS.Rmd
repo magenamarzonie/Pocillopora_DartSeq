@@ -1,0 +1,85 @@
+---
+title: "4_GWAS"
+author: "M.Marzonie"
+date: "2023-12-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(GAPIT)
+library(ggplot2)
+library(dplyr)
+```
+**We are using GAPIT because it is similar to TASSEL but it works in RStudio**. 
+**Can do both trait and genetic data in Rstudio instead of running in different programs**
+
+
+**GWAS should work well for Acropora humilis given the weak population structure. Also, we know there are three host clusters/cryptic species and we can control for these as covariates**
+
+
+
+
+#If data is in HapMap format, we only need two files: phenotypic and hapmap file. 
+```{r}
+#Step 1: Set data directory and import files
+myY <- read.table("trait.gapit.txt", head = TRUE)
+myG <- read.delim("gl3_hapmap.hmp.txt", head = FALSE)
+```
+
+
+##Check phenotype data to make sure file structure is correct and how data is distributed, checking for outliers. 
+```{r}
+str(pheno)
+hist(pheno$ED50)
+```
+
+#Basic summary statistics
+```{r}
+mean(pheno$ED50)
+range(pheno$ED50)
+sd(pheno$ED50)
+which(is.na(pheno$ED50)) #no missing data 
+```
+
+
+**For a trial analysis, GLM and BLINK are good to start with** 
+
+
+
+```{r}
+#Step 2: Run GAPIT
+myGAPIT <- GAPIT(
+Y=myY,
+G=myG,
+PCA.total=5
+)
+```
+
+
+
+```{r}
+#first analysis where compression is not used in the model. 
+Analysis1 <- GAPIT(
+  Y = pheno,
+  G = hapmap_geno,
+  SNP.impute = "Major",
+  PCA.total=3,
+  Major.allele.zero = T,
+  group.from =175,
+  group.to = 175,
+  group.by=1, 
+  seq.cutoff = 10,
+  model = "MLM"
+)
+```
+
+
+
+
+
+
+

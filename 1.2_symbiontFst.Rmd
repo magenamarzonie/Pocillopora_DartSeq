@@ -1,0 +1,393 @@
+---
+title: "1.2_symbiontFst"
+output: html_document
+date: "2022-10-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#load libraries 
+library(dartR)
+library(adegenet)
+library(poppr)
+library(hierfstat)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+library(scales)
+library(dplyr)
+```
+
+```{r}
+load("grouplist.RData") 
+grouplist <- grouplist %>% 
+  dplyr::rename(id = name)
+grouplist <- grouplist %>% 
+  mutate(kgroup = factor(kgroup), id = factor(id))
+```
+
+
+```{r}
+meta_kgroup <- read.csv("Marzonie_DArTseq_AcroporaHumilis2021_LIMSID.csv") %>% 
+  right_join(grouplist, by = "id")
+meta_kgroup
+
+levels(grouplist$id)
+
+#write.csv(meta_kgroup, "/Users/magenamarzonie/Library/CloudStorage/OneDrive-JamesCookUniversity/R Scripts/Ch3_Dartseq/AcroporaDartseq/meta_kgroup.csv", row.names = FALSE)
+```
+
+```{r}
+gl.sym <- gl.read.dart(filename = "Report_DAc22-6709_SNP_mapping_2.csv", covfilename = "meta_kgroup.csv")
+
+nInd(gl.sym)
+nLoc(gl.sym)
+nPop(gl.sym)
+
+#here we have the population names for each of the 8 k-clusters in the symbiont UPGMA tree (instead of grouping by reef)
+popNames(gl.sym)
+```
+
+
+```{r}
+m.sym <- as.matrix(gl.sym)
+```
+
+
+
+## Filter by call rate 
+```{r}
+#First we are filtering SNP call rate typically at 95 % threshold to make a confident call on genotype. 
+#we need to decide whether it's better to filter by individual or by locus first. We agree it is better to lose loci in this case than to lose individuals, so we will filter by loci first. Indicated by method = "loc"
+# We are basically calculating the percentage of complete genotypes per loci in the entire dataset for Acropora. 
+
+#filter out secondaries (all but one SNP retained per sequence tag)
+gl.sym <- gl.filter.secondaries(gl.sym)
+
+nLoc(gl.sym)
+#now we have 39,699 loci 
+
+gl.report.reproducibility(gl.sym)
+
+#filter loci with reproducibility below a particular threshold
+gl.sym <- gl.filter.reproducibility(gl.sym, threshold = 0.98)
+
+#filter loci with >5% missing data. this is standard. 
+gl2.sym<- gl.filter.callrate(gl.sym, method = "loc", threshold = 0.95)
+
+#provide a summary of the call rate values
+gl.report.callrate(gl2.sym) 
+
+#filtering individuals with more than 20% missing data. 
+gl2.sym <- gl.filter.callrate(gl2.sym, method = "ind", threshold = 0.8)
+```
+
+
+```{r}
+#MAF filtering < 0.05
+gl3.sym <- gl.filter.maf(gl2.sym, threshold = 0.95) 
+gl.report.maf(gl3.sym)
+
+```
+
+```{r}
+gl3.sym
+nPop(gl3.sym)
+```
+
+
+```{r}
+acro_gen.sym <- gl2gi(gl3.sym, probar = FALSE, verbose = NULL)
+dat.miss.sym = info_table(acro_gen.sym, plot = TRUE, type = "missing")
+```
+
+
+```{r}
+gl3.sym <- gl.impute(
+  gl3.sym,
+  method = "neighbour",
+  fill.residual = TRUE,
+  parallel = FALSE,
+  verbose = NULL
+)
+```
+
+
+```{r}
+acro_gen.sym <- gl2gi(gl3.sym, probar = FALSE, verbose = NULL)
+acro_gen.sym
+
+is.genind(acro_gen.sym)
+```
+
+
+```{r}
+isPoly(acro_gen.sym) %>% summary
+
+#remove loci that are not polymorphic
+poly_loci.sym = names(which(isPoly(acro_gen.sym) == TRUE))
+acro_gen.sym = acro_gen.sym[loc = poly_loci.sym]
+isPoly(acro_gen.sym) %>% summary
+```
+
+
+## Calculate Fst values 
+```{r}
+#using hierfstat package here. 
+#compute pairwise Fst values. Returns pairwise distances folloiwng Weir & Cockerham 1984 
+acro_fst.sym = genet.dist(acro_gen.sym, method = "WC84") %>% round(digits = 3)
+acro_fst.sym
+```
+
+##Plotting Fst values as a grid 
+```{r}
+library(wesanderson)
+pal = wes_palette("Zissou1", 12, type = "continuous")
+
+#Visualise pairwise Fst for reefs 
+# Desired order of labels
+lab_order = c("1", "2", "3", "4", "5", "6", "7", "8")
+
+# Change order of rows and cols
+fst.mat = as.matrix(acro_fst.sym)
+fst.mat1 = fst.mat[lab_order, ]
+fst.mat2 = fst.mat1[, lab_order]
+
+# Create a data.frame
+ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                    Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                    Fst = fst.mat2[ ind ])
+
+# Keep the order of the levels in the data.frame for plotting 
+fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+
+# Convert minus values to zero
+fst.df$Fst[fst.df$Fst < 0] = 0
+
+# Print data.frame summary
+fst.df %>% str
+
+
+# Fst italic label
+fst.label = expression(italic("F")[ST])
+
+# Extract middle Fst value for gradient argument
+mid = max(fst.df$Fst) / 2
+
+# Plot heatmap
+ggplot(data = fst.df, aes(x = Site1, y = Site2, fill = Fst))+
+  geom_tile(colour = "black")+
+  geom_text(aes(label = Fst), color="black", size = 3)+
+    scale_fill_gradientn(colours = pal) + 
+  scale_colour_gradientn(colours = pal) +
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0), position = "right")+
+  theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 0.5), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 10)
+        )
+```
+
+
+##Running PCA before DAPC
+```{r}
+x.sym = tab(acro_gen.sym, NA.method = "mean")
+
+# Perform PCA
+pca1.sym = dudi.pca(x.sym, scannf = FALSE, scale = FALSE, nf = 3)
+
+# Analyse how much percent of genetic variance is explained by each axis
+percent = pca1.sym$eig/sum(pca1.sym$eig)*100
+barplot(percent, ylab = "Genetic variance explained by eigenvectors (%)", ylim = c(0,12),
+        names.arg = round(percent, 1))
+```
+
+#DAPC 
+```{r}
+# Perform cross validation to find the optimal number of PCs to retain in DAPC. We cannot do this exercise on the k=8 clusters, because 4 groups only contain 1 member. Instead, we will filter the intial dataset to only include the 2 main clusters (pop 1 and pop 2)
+```
+
+
+
+
+
+#Do this entire exercise again but just with populations 1 and 2, which are the two main branches of the tree. branches 3-8 are all outliers. We want to see whether the two branches of the tree for the symbionts are genetically distinct clusters 
+
+
+```{r}
+#gl.sym.clean <- gl.read.dart(filename = "Report_DAc22-6709_SNP_mapping_2.csv", covfilename = "meta_kgroup.csv")
+
+gl.sym.clean <- gl.keep.pop(gl.sym.clean, 
+                            pop.list = c("1", "2"))
+
+nInd(gl.sym.clean)
+nLoc(gl.sym.clean)
+nPop(gl.sym.clean)
+
+#here we have the population names for each of the 8 k-clusters in the symbiont UPGMA tree (instead of grouping by reef)
+popNames(gl.sym.clean)
+```
+
+
+```{r}
+m.sym.clean <- as.matrix(gl.sym.clean)
+```
+
+
+
+## Filter by call rate 
+```{r}
+#First we are filtering SNP call rate typically at 95 % threshold to make a confident call on genotype. 
+#we need to decide whether it's better to filter by individual or by locus first. We agree it is better to lose loci in this case than to lose individuals, so we will filter by loci first. Indicated by method = "loc"
+# We are basically calculating the percentage of complete genotypes per loci in the entire dataset for Acropora. 
+
+#filter out secondaries (all but one SNP retained per sequence tag)
+gl.sym.clean <- gl.filter.secondaries(gl.sym.clean)
+
+nLoc(gl.sym.clean)
+#now we have 39,699 loci 
+
+gl.report.reproducibility(gl.sym.clean)
+
+#filter loci with reproducibility below a particular threshold
+gl.sym.clean <- gl.filter.reproducibility(gl.sym.clean, threshold = 0.98)
+
+#filter loci with >5% missing data. this is standard. 
+gl2.sym.clean <- gl.filter.callrate(gl.sym.clean, method = "loc", threshold = 0.95)
+
+#provide a summary of the call rate values
+gl.report.callrate(gl2.sym.clean) 
+
+#filtering individuals with more than 20% missing data. 
+gl2.sym.clean <- gl.filter.callrate(gl2.sym.clean, method = "ind", threshold = 0.8)
+```
+
+
+
+```{r}
+#MAF filtering < 0.05
+gl3.sym.clean <- gl.filter.maf(gl2.sym.clean, threshold = 0.95) 
+gl.report.maf(gl3.sym.clean)
+
+```
+
+```{r}
+gl3.sym.clean
+nPop(gl3.sym.clean)
+```
+
+
+```{r}
+acro_gen.sym.clean <- gl2gi(gl3.sym.clean, probar = FALSE, verbose = NULL)
+dat.miss.sym.clean = info_table(acro_gen.sym.clean, plot = TRUE, type = "missing")
+```
+
+
+```{r}
+gl3.sym.clean <- gl.impute(
+  gl3.sym.clean,
+  method = "neighbour",
+  fill.residual = TRUE,
+  parallel = FALSE,
+  verbose = NULL
+)
+
+```
+
+
+```{r}
+acro_gen.sym.clean <- gl2gi(gl3.sym.clean, probar = FALSE, verbose = NULL)
+acro_gen.sym.clean
+
+is.genind(acro_gen.sym.clean)
+nPop(acro_gen.sym.clean)
+```
+
+
+```{r}
+isPoly(acro_gen.sym.clean) %>% summary
+
+#remove loci that are not polymorphic
+poly_loci.sym.clean = names(which(isPoly(acro_gen.sym.clean) == TRUE))
+acro_gen.sym.clean = acro_gen.sym.clean[loc = poly_loci.sym.clean]
+isPoly(acro_gen.sym.clean) %>% summary
+```
+
+
+## Calculate Fst values 
+```{r}
+nPop(acro_gen.sym.clean)
+#using hierfstat package here. 
+#compute pairwise Fst values. Returns pairwise distances folloiwng Weir & Cockerham 1984 
+acro_fst.sym.clean = genet.dist(acro_gen.sym.clean, method = "WC84") %>% round(digits = 3)
+nPop(acro_gen.sym.clean)
+acro_fst.sym.clean
+```
+
+##Plotting Fst values as a grid 
+```{r}
+library(wesanderson)
+pal = wes_palette("Zissou1", 12, type = "continuous")
+
+#Visualise pairwise Fst for reefs 
+# Desired order of labels
+lab_order = c("1", "2")
+
+# Change order of rows and cols
+fst.mat = as.matrix(acro_fst.sym.clean)
+fst.mat1 = fst.mat[lab_order, ]
+fst.mat2 = fst.mat1[, lab_order]
+
+# Create a data.frame
+ind = which(upper.tri(fst.mat2), arr.ind = TRUE)
+fst.df = data.frame(Site1 = dimnames(fst.mat2)[[2]][ind[,2]],
+                    Site2 = dimnames(fst.mat2)[[1]][ind[,1]],
+                    Fst = fst.mat2[ ind ])
+
+# Keep the order of the levels in the data.frame for plotting 
+fst.df$Site1 = factor(fst.df$Site1, levels = unique(fst.df$Site1))
+fst.df$Site2 = factor(fst.df$Site2, levels = unique(fst.df$Site2))
+
+# Convert minus values to zero
+fst.df$Fst[fst.df$Fst < 0] = 0
+
+# Print data.frame summary
+fst.df %>% str
+
+
+# Fst italic label
+fst.label = expression(italic("F")[ST])
+
+# Extract middle Fst value for gradient argument
+mid = max(fst.df$Fst) / 2
+
+# Plot heatmap
+ggplot(data = fst.df, aes(x = Site1, y = Site2, fill = Fst))+
+  geom_tile(colour = "black")+
+  geom_text(aes(label = Fst), color="black", size = 3)+
+    scale_fill_gradientn(colours = pal) + 
+  scale_colour_gradientn(colours = pal) +
+  scale_x_discrete(expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0), position = "right")+
+  theme(axis.text = element_text(colour = "black", size = 10, face = "bold"),
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 0.5), 
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 10)
+        )
+```
+
+
